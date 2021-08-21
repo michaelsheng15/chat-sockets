@@ -1,51 +1,94 @@
-const http = require('http')
-const path = require('path')
-const express = require('express')
-const socketio = require('socket.io')
-const Filter = require('bad-words')
+const http = require("http");
+const path = require("path");
+const express = require("express");
+const socketio = require("socket.io");
+const Filter = require("bad-words");
 
-const  {generateMessage, generateLocation} = require('./utils/messages')
-
+const { generateMessage, generateLocation } = require("./utils/messages");
+const {
+  addUser,
+  removeUser,
+  getUser,
+  getUsersInRoom,
+} = require("./utils/user");
 
 const app = express();
-const server = http.createServer(app)
-const io = socketio(server) //expects it to be called with raw http server so we manually created it
+const server = http.createServer(app);
+const io = socketio(server); //expects it to be called with raw http server so we manually created it
 
 const port = process.env.PORT || 3005;
-const publicDirectoryPath = path.join(__dirname, '../public')
+const publicDirectoryPath = path.join(__dirname, "../public");
 
-app.use(express.static(publicDirectoryPath))
+app.use(express.static(publicDirectoryPath));
 
+io.on("connection", (socket) => {
+  console.log("new websocket connection");
 
-io.on('connection', (socket)=>{
-    console.log('new websocket connection');
-    socket.emit('message', generateMessage('Welcome!'))
+  socket.on("join", ({ username, room }, callback) => {
+    const { error, user } = addUser({ id: socket.id, username, room });
 
-    socket.broadcast.emit('message', generateMessage('A new user has joined'))
+    if (error) {
+      return callback(error);
+    }
 
-    socket.on('sendMessage', (message, callback)=>{
-        const filter = new Filter()
+    socket.join(user.room);
 
+    socket.emit("message", generateMessage("Admin", "Welcome!"));
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        "message",
+        generateMessage("Admin", `${user.username} has joined!`)
+      );
 
-        if(filter.isProfane(message)){
-            return callback('Profanity is not allowed')
-        }
+    io.to(user.room).emit("roomData", {
+      room: user.room,
+      users: getUsersInRoom(user.room),
+    });
 
-        io.emit('message', generateMessage(message))
-        callback()
-    })
+    callback();
+  });
 
-    socket.on('disconnect', ()=>{
-        io.emit('message', generateMessage("A user has left"))
-    })
+  socket.on("sendMessage", (message, callback) => {
+    const user = getUser(socket.id);
+    const filter = new Filter();
 
-    socket.on("sendLocation", (location, callback)=>{
-        io.emit('locationMessage', generateLocation(`https://google.com/maps?q=${location.lat},${location.long}`))
-        callback()
-    })
-})
+    if (filter.isProfane(message)) {
+      return callback("Profanity is not allowed");
+    }
 
-server.listen(port, ()=>{
-    console.log('Server is up on port ' + port);
-})
+    io.to(user.room).emit("message", generateMessage(user.username, message));
+    callback();
+  });
 
+  socket.on("disconnect", () => {
+    const user = removeUser(socket.id);
+
+    if (user) {
+      io.to(user.room).emit(
+        "message",
+        generateMessage("Admin", `${user.username} has left`)
+      );
+      io.to(user.room).emit("roomData", {
+        room: user.room,
+        users: getUsersInRoom(user.room),
+      });
+    }
+  });
+
+  socket.on("sendLocation", (location, callback) => {
+    const user = getUser(socket.id);
+    io.to(user.room).emit(
+      "locationMessage",
+      generateLocation(
+        user.username,
+        `https://google.com/maps?q=${location.lat},${location.long}`
+      )
+    );
+    callback();
+  });
+});
+
+server.listen(port, () => {
+  console.log("Server is up on port " + port);
+});
